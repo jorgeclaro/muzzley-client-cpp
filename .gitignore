@@ -4,6 +4,7 @@
 *.d
 *.so
 *.so.*
+.DS_Store
 autom4te.cache
 .sublime-project
 .sublime-project.sublime-workspace

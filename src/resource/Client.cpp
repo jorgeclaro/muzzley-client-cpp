@@ -24,7 +24,8 @@ PERFORMANCE OF THIS SOFTWARE.
 #include <bitset>
 #include <muzzley/log/log.h>
 
-#define HEARTBEAT_SECONDS 75
+#define HEARTBEAT_SECONDS 30
+#define RECONNECT_TRIAL_INTERVAL 5
 
 muzzley::Client::Client() : __serial( 1 ),  __endpoint_host("geoplatform.muzzley.com") {
 	this->__mtx = new pthread_mutex_t();
@@ -318,6 +319,24 @@ bool muzzley::Client::connect(string _host, uint16_t _port, string _path) {
 	_message.insert(_message.length(), CRLF);
 	_message.insert(_message.length(), CRLF);
 
+	if (!this->__is_running()){
+		while (!this->__channel.open(_host, _port)) {
+#ifdef MUZZLEY_DEBUG
+			string _log("could not open socket");
+			muzzley::log(_log, muzzley::warning);
+#ifdef
+			sleep(RECONNECT_TRIAL_INTERVAL);
+		}
+	} else {
+		if (!this->__channel.open(_host, _port)) {
+#ifdef MUZZLEY_DEBUG
+			string _log("could not open socket");
+			muzzley::log(_log, muzzley::warning);
+#endif
+			return false;
+		}
+	}
+
 	while (!this->__channel.open(_host, _port)) {
 		muzzley::Message _empty;
 		if (!this->trigger(muzzley::Reconnect, _empty)) {
@@ -334,6 +353,7 @@ bool muzzley::Client::connect(string _host, uint16_t _port, string _path) {
 		muzzley::log(_log, muzzley::notice);
 	}
 #endif
+	this->__channel << flush;
 	this->__channel << _message << flush;
 
 	string _reply;
@@ -365,17 +385,36 @@ void muzzley::Client::disconnect() {
 	this->__channel << (uint8_t) 0x00;
 	this->__channel << flush;
 	this->__channel.close();
-}
+	this->__has_handshake = false;
 
-bool muzzley::Client::reconnect() {
-	if (this->isConnected()) {
-		this->disconnect();
-	}
 	this->disarm();
 	this->__queue.erase(this->__queue.begin(), this->__queue.end());
 	this->__participants.erase(this->__participants.begin(), this->__participants.end());
 	this->__stack.erase(this->__stack.begin(), this->__stack.end());
 	this->__namespaces.erase(this->__namespaces.begin(), this->__namespaces.end());
+
+#ifdef MUZZLEY_DEBUG
+	string __log("socket disconnected");
+	muzzley::log(__log, muzzley::warning);
+#endif
+}
+
+bool muzzley::Client::reconnect() {
+	if (!this->__is_connected()) {
+#ifdef MUZZLEY_DEBUG
+		string __log("socket is still open! will disconnect and reconnect again");
+		muzzley::log(__log, muzzley::warning);
+#endif
+		this->disconnect();
+	}
+
+	sleep(RECONNECT_TRIAL_INTERVAL);
+
+#ifdef MUZZLEY_DEBUG
+	string __log("reconnecting");
+	muzzley::log(__log, muzzley::notice);
+#endif
+	
 	muzzley::Message _empty;
 	if (this->trigger(muzzley::Reconnect, _empty)) {
 		if (this->__app_token.length() != 0) {
@@ -493,10 +532,14 @@ bool muzzley::Client::write(muzzley::Message& _message, muzzley::Callback _callb
 
 bool muzzley::Client::write(string& _to_send) {
 	if (!this->isConnected()) {
-		if (!this->reconnect()) {
-			return false;
-		}
+#ifdef MUZZLEY_DEBUG
+		string __log("could not write to socket, it is not connected");
+		muzzley::log(__log, muzzley::warning);
+#endif
+		this->disarm();
+		return false;
 	}
+
 	int _len = _to_send.length();
 
 	this->__channel << (unsigned char) 0x81;
